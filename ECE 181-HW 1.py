@@ -364,8 +364,7 @@ def _(mo):
 @app.cell
 def _(storke_tower_image):
     # EDIT BELOW: take the upper-left crop from storke_tower_image.
-    input_image = storke_tower_image
-    input_image = storke_tower_image[0:512, 0:512] # Crop to 512 x 512
+    input_image = storke_tower_image[0:512, 0:512]
     return (input_image,)
 
 
@@ -405,7 +404,6 @@ def blur_and_downsample(convolve2d_full):
 
         # Crop the blurred image to the same size as the original image 
         cropped_img = blurred_img[start_r:image.shape[0] + start_r, start_c:image.shape[1] + start_c]
-        print(cropped_img.shape[0], cropped_img.shape[1])
 
         # Downsample by taking every second pixel in both dimensions
         return cropped_img[::2, ::2]
@@ -459,6 +457,37 @@ def _(mo):
 
 @app.cell
 def build_laplacian_pyramid(convolve2d_full, np):
+    def expand_image(g_img, kernel, target_shape):
+        """
+        Upsamples an image by 2x and blurs it.
+        """
+        expanded = g_img.astype(float)
+
+        # Keep upsampling until the image is large enough for the target shape
+        while expanded.shape != target_shape:
+            H, W = expanded.shape[:2]
+
+            # Create an upsampled image with 2x height and width
+            upsampled = np.zeros((H * 2, W * 2), dtype=float)
+            upsampled[::2, ::2] = expanded
+
+            # Convolve with kernel, multiplying the kernel intensity by 4 to accomodate
+            # for the upsampling
+            expanded = convolve2d_full(upsampled, kernel * 4)
+
+            # Crop to the expected doubled dimensions
+            start_r = (kernel.shape[0] - 1) // 2
+            start_c = (kernel.shape[1] - 1) // 2
+            expanded = expanded[
+                start_r : start_r + H * 2,
+                start_c : start_c + W * 2
+            ]
+
+        # Crop back to the target shape
+        cropped = expanded[:target_shape[0], :target_shape[1]]
+
+        return cropped
+
     def build_laplacian_pyramid(gaussian_pyramid):
         """Return Laplacian levels followed by the coarsest Gaussian residual."""
         pyramid = []
@@ -466,7 +495,6 @@ def build_laplacian_pyramid(convolve2d_full, np):
         # EDIT BELOW: construct the Laplacian level at each requested resolution,
         # then append the final coarsest Gaussian level.
 
-        # Get the Gaussian kernel again for smoothing
         kernel = np.array(
             [
                 [1, 4, 6, 4, 1],
@@ -476,27 +504,23 @@ def build_laplacian_pyramid(convolve2d_full, np):
                 [1, 4, 6, 4, 1],
             ],
             dtype=float,
-        ) / 256
+        ) / 256.0
 
-        # Process all levels except the last coarsest level
+        # Construct Laplacian level for each level except the last
         for i in range(len(gaussian_pyramid) - 1):
-            g_img = gaussian_pyramid[i]
+            g_curr = gaussian_pyramid[i]
+            g_next = gaussian_pyramid[i + 1]
         
-            # Smooth the image at current resolution
-            blurred_img = convolve2d_full(g_img, kernel)
+            # Expand next coarser level up to current level's dimensions
+            g_next_expanded = expand_image(g_next, kernel, g_curr.shape)
         
-            # Crop back to exact original dimensions
-            start_r = (kernel.shape[0] - 1) // 2
-            start_c = (kernel.shape[1] - 1) // 2
-            cropped_img = blurred_img[start_r : start_r + g_img.shape[0], start_c : start_c + g_img.shape[1]]
-        
-            # Laplacian = Original/Gaussian image at this level minus its Gaussian-smoothed version
-            l_img = g_img - cropped_img
+            # The Laplacian image is the original Gaussian image minus an upsampled
+            # version of the coarser image
+            l_img = g_curr - g_next_expanded
             pyramid.append(l_img)
 
         # Append the final coarsest Gaussian level
         pyramid.append(gaussian_pyramid[-1])
-        
         return pyramid
 
     return (build_laplacian_pyramid,)
